@@ -1,10 +1,30 @@
+
+import os
 import requests
 import json
+import streamlit as st
 
-API_KEY = "prism_live_jOhiuyUGipCcHCnnRHPpaEiCbc_9YRhGU_awGI4Lujk"
+# --- API key: moved out of the source code ---
+# Reads from an environment variable first, then from Streamlit secrets
+# (needed for when this gets deployed on Streamlit Community Cloud later).
+# See the note at the bottom of this message for how to set this up —
+# do this BEFORE pushing this file to GitHub.
+def _get_api_key():
+    key = os.environ.get("PRISM_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets.get("PRISM_API_KEY", "")
+    except Exception:
+        return ""  # no secrets.toml file at all — fine, just means no key set that way
+
+
+API_KEY = _get_api_key()
+
 PROCESS_ID = "cmtzo3mdz000b3mmjuwkwdmms"
 BASE_URL = "https://api.prismrun.ai/api/chat"
-HEADERS = {"Authorization": f"Bearer {prism_live_jOhiuyUGipCcHCnnRHPpaEiCbc_9YRhGU_awGI4Lujk}", "Content-Type": "application/json"}
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
 
 def start_run():
     """Step 1: Start a new session with the Symptom Checker process."""
@@ -15,6 +35,7 @@ def start_run():
     )
     return response.json()["runId"]
 
+
 def send_message(run_id, message):
     """Step 2: Send the user's symptom message."""
     requests.post(
@@ -22,6 +43,7 @@ def send_message(run_id, message):
         headers=HEADERS,
         json={"runId": run_id, "message": message, "model": "gpt-5.1 (non reasoning)", "resourceIds": []}
     )
+
 
 def get_ai_reply(run_id):
     """Step 3: Read the streaming response and extract the final AI reply."""
@@ -48,8 +70,44 @@ def get_ai_reply(run_id):
                 break
     return latest_message
 
+
 def get_symptom_advice(user_message):
     """Full flow: run all 3 steps and return the AI's advice."""
     run_id = start_run()
     send_message(run_id, user_message)
     return get_ai_reply(run_id)
+
+
+# ---------- NEW: the Streamlit UI, this is what app.py calls ----------
+
+def render_tab():
+    st.header("🩺 Symptom Checker")
+    st.caption(
+        "Describe how you're feeling in plain language. This tool gives general "
+        "guidance only — it does not diagnose. Always see a real doctor for anything serious."
+    )
+
+    if not API_KEY:
+        st.error("PRISM_API_KEY not found. Set it as an environment variable or in Streamlit secrets.")
+        return
+
+    symptoms = st.text_area(
+        "What symptoms are you experiencing?",
+        placeholder="e.g. sore throat, mild fever since yesterday, headache",
+        height=100,
+    )
+
+    if st.button("Check symptoms", type="primary", disabled=not symptoms.strip()):
+        with st.spinner("Checking with AI..."):
+            try:
+                advice = get_symptom_advice(symptoms)
+            except Exception as e:
+                st.error(f"Something went wrong talking to Prism: {e}")
+                return
+
+        if not advice:
+            st.warning("No response came back — try again in a moment.")
+        else:
+            st.markdown(advice)
+
+        st.caption("⚠️ This is not a medical diagnosis. Please consult a doctor for anything serious.")
