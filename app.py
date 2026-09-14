@@ -8,7 +8,7 @@ from login import render_login_gate
 import profile as profile_tab
 import symptom_checker
 # import reminders
-# import doctors
+import doctors
 
 st.set_page_config(page_title="AI Health Assistant", page_icon="🏥", layout="centered")
 
@@ -33,8 +33,7 @@ with tab2:
     # reminders.render_tab()
 
 with tab3:
-    st.info("Doctor finder goes here — teammate to call doctors.render_tab()")
-    # doctors.render_tab()
+    doctors.render_tab()
 
 with tab4:
     profile_tab.render_tab()

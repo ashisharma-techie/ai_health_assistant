@@ -1,16 +1,12 @@
 """
-symptom_checker.py — now powered by Google's Gemini API (free tier).
+symptom_checker.py — powered by Google's Gemini API (free tier).
 
-Drop-in replacement: still has render_tab() with no arguments, so app.py
-doesn't need to change at all.
+Has render_tab() with no arguments, so app.py doesn't need to change.
 
-Setup needed:
-1. Go to aistudio.google.com, sign in with a Google account, click
-   "Get API key" — no credit card required for the free tier (verify this
-   is still true when you sign up, terms can change).
-2. Add this line to your .env file: GEMINI_API_KEY=your-key-here
-3. No extra pip install needed — this uses plain `requests`, which you
-   already have installed.
+Setup:
+1. Go to aistudio.google.com, sign in with Google, click "Get API key".
+2. Add to your .env file:  GEMINI_API_KEY=your-key-here
+3. Uses plain `requests` (already installed) — no extra pip install needed.
 """
 
 import os
@@ -19,8 +15,7 @@ import re
 import requests
 import streamlit as st
 
-# If this model name ever 404s, check aistudio.google.com for the current
-# recommended model name — Google renames/updates these periodically.
+# If this model name ever 404s, check aistudio.google.com for the current one.
 MODEL = "gemini-3.6-flash"
 BASE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
@@ -50,11 +45,12 @@ Respond ONLY with valid JSON, no preamble, no markdown fences, in exactly this s
 
 
 def _get_api_key():
-    key = os.environ.get("GEMINI_API_KEY")
+    """Try .env first (local), then Streamlit secrets (cloud)."""
+    key = os.getenv("GEMINI_API_KEY")
     if key:
         return key
     try:
-        return st.secrets.get("GEMINI_API_KEY", "")
+        return st.secrets["GEMINI_API_KEY"]
     except Exception:
         return ""
 
@@ -63,6 +59,7 @@ API_KEY = _get_api_key()
 
 
 def _parse_response(raw_text: str) -> dict:
+    """Strip markdown fences if the model added them, then parse JSON."""
     cleaned = re.sub(r"^```(json)?|```$", "", raw_text.strip(), flags=re.MULTILINE).strip()
     try:
         return json.loads(cleaned)
@@ -76,6 +73,7 @@ def _parse_response(raw_text: str) -> dict:
 
 
 def get_symptom_advice(user_message: str) -> dict:
+    """Send symptoms to Gemini, get back structured advice."""
     url = f"{BASE_URL}?key={API_KEY}"
     body = {
         "contents": [
