@@ -1,3 +1,4 @@
+import medicine_reminder
 import streamlit as st
 
 st.title("AI Health Assistant")
@@ -11,8 +12,7 @@ with tab1:
         st.write("This is where the AI response will appear.")
 
 with tab2:
-    st.subheader("Medicine Reminders")
-    st.write("Coming soon")
+    medicine_reminder.medicine_reminder_tab()
 
 with tab3:
     st.subheader("Find Nearby Doctors")
