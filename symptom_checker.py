@@ -1,84 +1,107 @@
+"""
+symptom_checker.py — now powered by Google's Gemini API (free tier).
+
+Drop-in replacement: still has render_tab() with no arguments, so app.py
+doesn't need to change at all.
+
+Setup needed:
+1. Go to aistudio.google.com, sign in with a Google account, click
+   "Get API key" — no credit card required for the free tier (verify this
+   is still true when you sign up, terms can change).
+2. Add this line to your .env file: GEMINI_API_KEY=your-key-here
+3. No extra pip install needed — this uses plain `requests`, which you
+   already have installed.
+"""
 
 import os
-import requests
 import json
+import re
+import requests
 import streamlit as st
 
-# --- API key: moved out of the source code ---
-# Reads from an environment variable first, then from Streamlit secrets
-# (needed for when this gets deployed on Streamlit Community Cloud later).
-# See the note at the bottom of this message for how to set this up —
-# do this BEFORE pushing this file to GitHub.
+# If this model name ever 404s, check aistudio.google.com for the current
+# recommended model name — Google renames/updates these periodically.
+MODEL = "gemini-3.6-flash"
+BASE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+
+SYSTEM_PROMPT = """You are a health triage assistant, not a doctor. The user will
+describe a symptom or set of symptoms.
+
+Your job:
+1. List 2-4 possible general causes (phrased as possibilities, never certainties).
+2. Classify urgency as exactly one of: "Mild", "Moderate", "Severe".
+   Classify as Severe if there are signs of chest pain, difficulty breathing,
+   severe bleeding, sudden confusion, or anything life-threatening.
+3. Give advice appropriate to the urgency:
+   - Severe: tell the user to seek emergency help immediately, no home remedies.
+   - Moderate: general self-care advice + recommend seeing a doctor within 1-2 days.
+   - Mild: general self-care tips + monitor for a few days.
+4. Always include this exact disclaimer: "This is general guidance, not a medical
+   diagnosis. Please consult a doctor for proper care."
+
+Respond ONLY with valid JSON, no preamble, no markdown fences, in exactly this shape:
+{
+  "possible_causes": ["...", "..."],
+  "urgency": "Mild" | "Moderate" | "Severe",
+  "advice": "...",
+  "disclaimer": "This is general guidance, not a medical diagnosis. Please consult a doctor for proper care."
+}
+"""
+
+
 def _get_api_key():
-    key = os.environ.get("PRISM_API_KEY")
+    key = os.environ.get("GEMINI_API_KEY")
     if key:
         return key
     try:
-        return st.secrets.get("PRISM_API_KEY", "")
+        return st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
-        return ""  # no secrets.toml file at all — fine, just means no key set that way
+        return ""
 
 
 API_KEY = _get_api_key()
 
-PROCESS_ID = "cmtzo3mdz000b3mmjuwkwdmms"
-BASE_URL = "https://api.prismrun.ai/api/chat"
-HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+def _parse_response(raw_text: str) -> dict:
+    cleaned = re.sub(r"^```(json)?|```$", "", raw_text.strip(), flags=re.MULTILINE).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "possible_causes": ["Could not parse AI response."],
+            "urgency": "Moderate",
+            "advice": raw_text,
+            "disclaimer": "This is general guidance, not a medical diagnosis. Please consult a doctor for proper care.",
+        }
 
 
-def start_run():
-    """Step 1: Start a new session with the Symptom Checker process."""
-    response = requests.post(
-        f"{BASE_URL}/run-process",
-        headers=HEADERS,
-        json={"processId": PROCESS_ID, "model": "gpt-5.1 (non reasoning)", "resourceIds": []}
-    )
-    return response.json()["runId"]
+def get_symptom_advice(user_message: str) -> dict:
+    url = f"{BASE_URL}?key={API_KEY}"
+    body = {
+        "contents": [
+            {"role": "user", "parts": [{"text": user_message}]}
+        ],
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 500,
+        },
+    }
 
+    response = requests.post(url, json=body, timeout=30)
+    if not response.ok:
+        raise RuntimeError(f"Gemini API error ({response.status_code}): {response.text}")
 
-def send_message(run_id, message):
-    """Step 2: Send the user's symptom message."""
-    requests.post(
-        f"{BASE_URL}/send",
-        headers=HEADERS,
-        json={"runId": run_id, "message": message, "model": "gpt-5.1 (non reasoning)", "resourceIds": []}
-    )
+    data = response.json()
+    try:
+        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Unexpected Gemini response shape: {data}")
 
+    return _parse_response(raw_text)
 
-def get_ai_reply(run_id):
-    """Step 3: Read the streaming response and extract the final AI reply."""
-    url = f"{BASE_URL}/stream"
-    params = {"runId": run_id}
-    latest_message = ""
-    with requests.get(url, headers=HEADERS, params=params, stream=True) as r:
-        for line in r.iter_lines():
-            if not line:
-                continue
-            decoded = line.decode("utf-8")
-            if decoded.startswith("data:"):
-                decoded = decoded[len("data:"):].strip()
-            try:
-                data = json.loads(decoded)
-            except json.JSONDecodeError:
-                continue
-            if data.get("type") == "messages-update":
-                messages = data.get("messages", [])
-                for msg in messages:
-                    if msg.get("role") == "assistant":
-                        latest_message = msg.get("content", latest_message)
-            if data.get("type") == "status-update" and data.get("status") == "COMPLETED":
-                break
-    return latest_message
-
-
-def get_symptom_advice(user_message):
-    """Full flow: run all 3 steps and return the AI's advice."""
-    run_id = start_run()
-    send_message(run_id, user_message)
-    return get_ai_reply(run_id)
-
-
-# ---------- NEW: the Streamlit UI, this is what app.py calls ----------
 
 def render_tab():
     st.header("🩺 Symptom Checker")
@@ -88,7 +111,7 @@ def render_tab():
     )
 
     if not API_KEY:
-        st.error("PRISM_API_KEY not found. Set it as an environment variable or in Streamlit secrets.")
+        st.error("GEMINI_API_KEY not found. Add it to your .env file.")
         return
 
     symptoms = st.text_area(
@@ -100,14 +123,24 @@ def render_tab():
     if st.button("Check symptoms", type="primary", disabled=not symptoms.strip()):
         with st.spinner("Checking with AI..."):
             try:
-                advice = get_symptom_advice(symptoms)
+                result = get_symptom_advice(symptoms)
             except Exception as e:
-                st.error(f"Something went wrong talking to Prism: {e}")
+                st.error(f"Something went wrong: {e}")
                 return
 
-        if not advice:
-            st.warning("No response came back — try again in a moment.")
+        urgency = result.get("urgency", "Moderate")
+        if urgency == "Severe":
+            st.error("🚨 **Severe** — seek emergency help immediately.")
+        elif urgency == "Moderate":
+            st.warning("⚠️ **Moderate** — consider seeing a doctor within 1-2 days.")
         else:
-            st.markdown(advice)
+            st.success("🙂 **Mild** — likely manageable at home, monitor for a few days.")
 
-        st.caption("⚠️ This is not a medical diagnosis. Please consult a doctor for anything serious.")
+        st.subheader("Possible causes")
+        for cause in result.get("possible_causes", []):
+            st.markdown(f"- {cause}")
+
+        st.subheader("Advice")
+        st.write(result.get("advice", ""))
+
+        st.caption(result.get("disclaimer", "This is general guidance, not a medical diagnosis."))
